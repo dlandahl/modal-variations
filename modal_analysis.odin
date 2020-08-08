@@ -8,6 +8,10 @@ import "core:sort"
 import "core:os"
 import "core:fmt"
 
+divisor :: proc() {
+    fmt.println("\n\n==========================");
+}
+
 main :: proc() {
     using fmt;
 
@@ -22,9 +26,7 @@ main :: proc() {
 
     modal_analysis(data[:], 24);
 
-    println();
-    println();
-    println();
+    divisor();
 
     noise: [cast(int) SAMPLE_RATE * 16]f32;
     for _, n in noise do noise[n] = rand.float32_range(-1, 1);
@@ -32,16 +34,30 @@ main :: proc() {
 
     apply_nonmodal_variation(noise[:], 5, Range{4, 12}, Range{2, 8});
 
+
+    divisor();
+
     println(noise[0:16]);
-    success := os.write_entire_file("Noise", transmute([]byte) noise[:]);
-    println(success);
+    success := os.write_entire_file("noise", transmute([]byte) noise[:]);
+    println("Success write file:", success);
+
+    divisor();
+
+    file_data, error := os.read_entire_file("generative.wav");
+    println("Success read file:", success);
+    println(wave_read_header(file_data));
+
+    wave_file := wave_encode(noise[:]);
+    defer delete(wave_file);
+
+    success = os.write_entire_file("noise.wav", wave_file);
+    println("Success write wave file:", success);
+    
 }
 
-
-debug :: false;
-
-SAMPLE_RATE : f32 : 44100;
-FFT_SIZE    :     : 2048;
+DEBUG       :: false;
+SAMPLE_RATE :: 44100;
+FFT_SIZE    :: 2048;
 
 
 
@@ -68,13 +84,12 @@ biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad
 
 biquad_calculate_coefficients :: proc(frequency: f32, attenuation_db: f32, quality: f32) -> (coeffs: Biquad_Coefficients) {
     ω := math.TAU * frequency / SAMPLE_RATE;
-    cos_ω := math.cos(ω);
 
     α := math.sin(ω) / (2 * quality);
     A := math.pow(10, -attenuation_db / 40);
 
     coeffs.b0 = 1  + α * A;
-    coeffs.b1 = -2 * cos_ω;
+    coeffs.b1 = -2 * math.cos(ω);
     coeffs.b2 = 1  - α * A;
 
     coeffs.a0 = 1  + α / A;
@@ -102,6 +117,64 @@ apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain: Range, q
         for value, n in buffer do buffer[n] = biquad_process(value, &state, coeffs);
     }
 }
+
+
+
+Wave_Header :: struct #packed {
+    chunk_id        : [4]byte,
+    chunk_size      : u32,
+    format          : [4]byte,
+    subchunk_1_id   : [4]byte,
+    subchunk_1_size : u32,
+    audio_format    : u16,
+    num_channels    : u16,
+    sample_rate     : u32,
+    byte_rate       : u32,
+    block_align     : u16,
+    bits_per_sample : u16,
+    subchunk_2_id   : [4]byte,
+    subchunk_2_size : u32,
+}
+
+wave_generate_header :: proc(num_samples: int) -> (Wave_Header) {
+    using header: Wave_Header;
+    bytes_per_sample := size_of(f32);
+
+    chunk_id        = [4]byte{82, 73, 70, 70};
+    chunk_size      = cast(u32) (36 + num_samples * bytes_per_sample);
+    format          = [4]byte{87, 65, 86, 69};
+    subchunk_1_id   = [4]byte{102, 109, 116, 32};
+    subchunk_1_size = 16;
+    audio_format    = 3;
+    num_channels    = 1;
+    sample_rate     = cast(u32) SAMPLE_RATE;
+    byte_rate       = cast(u32) (SAMPLE_RATE * bytes_per_sample);
+    block_align     = cast(u16) bytes_per_sample;
+    bits_per_sample = 32;
+    subchunk_2_id   = [4]byte{100, 97, 116, 97};
+    subchunk_2_size = cast(u32) (num_samples * bytes_per_sample);
+
+    return header;
+}
+WAVE_HEADER_SIZE :: size_of(Wave_Header);
+
+wave_read_header :: proc(file: []byte) -> (header: Wave_Header) {
+    header_bytes: [WAVE_HEADER_SIZE]byte;
+    copy(header_bytes[:], file);
+    header = transmute(Wave_Header) header_bytes;
+    return;
+}
+
+wave_encode :: proc(buffer: []f32) -> (file: []byte) {
+    file = make([]byte, WAVE_HEADER_SIZE + len(buffer) * size_of(f32));
+
+    header := transmute([WAVE_HEADER_SIZE]byte) wave_generate_header(len(buffer));
+    copy(file, header[:]);
+    copy(file[WAVE_HEADER_SIZE:], transmute([]byte) buffer);
+
+    return;
+}
+
 
 
 
@@ -173,7 +246,7 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
 
     for value, n in data do magnitudes[n] = abs(value);
 
-    when debug {
+    when DEBUG {
         println(magnitudes[:len(data)/2+1]);
         println();
     }
@@ -186,7 +259,7 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
 
         greater_than_next := magnitudes[n] > magnitudes[n+1];
 
-        when debug do println(magnitudes[n], greater_than_previous, greater_than_next);
+        when DEBUG do println(magnitudes[n], greater_than_previous, greater_than_next);
 
         if !greater_than_previous && !greater_than_next do last_minimum_index = n;
         else if greater_than_previous && greater_than_next {
@@ -196,14 +269,14 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
                 n += 1;
                 greater_than_previous = magnitudes[n] > magnitudes[n-1];
                 greater_than_next     = magnitudes[n] > magnitudes[n+1];
-                when debug do println(magnitudes[n], greater_than_previous, greater_than_next);
+                when DEBUG do println(magnitudes[n], greater_than_previous, greater_than_next);
             }
             // if n >= len(magnitudes) / 2 do break;
 
             last_minimum_value := magnitudes[last_minimum_index];
             if last_minimum_index == 0 do last_minimum_value = 0;
 
-            when debug do println("new peak: ", last_minimum_value, " ", magnitudes[n]);
+            when DEBUG do println("new peak: ", last_minimum_value, " ", magnitudes[n]);
 
             average_minimum := (last_minimum_value + magnitudes[n]) / 2;
 
@@ -275,7 +348,7 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
     }
 
     {
-        if debug do println("\n\n\n");
+        if DEBUG do println("\n\n\n");
         for all_peaks_in_one_frame in all_peaks_in_all_frames {
             println("\n=====================");
             for peak in all_peaks_in_one_frame do if peak.weight > 0.01 do println(peak);
@@ -293,13 +366,13 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
 
         bin := spectral_frames[0][peak.index];
         new_mode: Mode;
-        new_mode.frequency = f32(peak.index) * SAMPLE_RATE / cast(f32) FFT_SIZE;
+        new_mode.frequency = f32(peak.index) * SAMPLE_RATE / FFT_SIZE;
         new_mode.phase = math.atan2(imag(bin), real(bin));
         // new_mode.amplitude = peak.weight / cast(f32) FFT_SIZE;
 
         for frame, l in spectral_frames {
             bin = frame[peak.index];
-            new_mode.envelope[l] = abs(bin) / cast(f32) FFT_SIZE;
+            new_mode.envelope[l] = abs(bin) / FFT_SIZE;
             // println(peak.weight / cast(f32) FFT_SIZE);
         }
 
