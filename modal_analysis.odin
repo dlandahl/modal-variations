@@ -2,13 +2,96 @@
 package modal_variations
 
 import "core:math"
+import "core:math/rand"
 import "core:mem"
 import "core:sort"
+import "core:os"
 import "core:fmt"
 
+main :: proc() {
+    using fmt;
+
+    N :: FFT_SIZE * 2;
+    data: [N]f32;
+
+    get_sine :: proc(n: int, frac: f32) -> f32 {
+        return math.sin(cast(f32) n * math.TAU / frac);
+    }
+
+    for n in 0..<N do data[n] = get_sine(n, 4.8) + get_sine(n, 8) + 0.6;
+
+    modal_analysis(data[:], 24);
+
+    println();
+    println();
+    println();
+
+    noise: [cast(int) SAMPLE_RATE]f32;
+    for _, n in noise do noise[n] = rand.float32_range(-1, 1);
+    println(noise[0:16]);
+
+    coeffs_a := biquad_calculate_coefficients(500, 70, 16);
+    coeffs_b := biquad_calculate_coefficients(10000, 30, 8);
+    
+    state: Biquad_State;
+    for value, n in noise do noise[n] = biquad_process(value, &state, coeffs_a);
+
+    state = Biquad_State{0, 0, 0, 0};
+    for value, n in noise do noise[n] = biquad_process(value, &state, coeffs_b);
+
+    println(noise[0:16]);
+    success := os.write_entire_file("Noise", transmute([]byte) noise[:]);
+    println(success);
+}
+
+
+debug :: false;
 
 SAMPLE_RATE : f32 : 44100;
 FFT_SIZE    :     : 2048;
+
+
+
+Biquad_State :: struct {
+    x1, x2,
+    y1, y2: f32,
+}
+
+Biquad_Coefficients :: struct {
+    a0, a1, a2,
+    b0, b1, b2: f32,
+}
+
+biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad_Coefficients) -> (y0: f32) {
+    y0 = (b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2) / a0;
+
+    x2 = x1;
+    x1 = x0;
+
+    y2 = y1;
+    y1 = y0;
+    return;
+}
+
+biquad_calculate_coefficients :: proc(frequency: f32, attenuation_db: f32, quality: f32) -> (coeffs: Biquad_Coefficients) {
+    ω := math.TAU * frequency / SAMPLE_RATE;
+    cos_ω := math.cos(ω);
+
+    α := math.sin(ω) / (2 * quality);
+    A := math.pow(10, -attenuation_db / 40);
+
+    coeffs.b0 = 1  + α * A;
+    coeffs.b1 = -2 * cos_ω;
+    coeffs.b2 = 1  - α * A;
+
+    coeffs.a0 = 1  + α / A;
+    coeffs.a1 = coeffs.b1;
+    coeffs.a2 = 1  - α / A;
+
+    return;
+}
+
+
 
 cooley_tukey :: proc(data: []complex64) {
 
@@ -204,7 +287,7 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
 
         for frame, l in spectral_frames {
             bin = frame[peak.index];
-            new_mode.envelope[l] = abs(frame[peak.index]) / cast(f32) FFT_SIZE;
+            new_mode.envelope[l] = abs(bin) / cast(f32) FFT_SIZE;
             // println(peak.weight / cast(f32) FFT_SIZE);
         }
 
@@ -215,23 +298,3 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
     for mode in modes do println(mode, "\n");
     return;
 }
-
-
-
-main :: proc() {
-    N :: FFT_SIZE * 2;
-    data: [N]f32;
-
-    get_sine :: proc(n: int, frac: f32) -> f32 {
-        return math.sin(cast(f32) n * math.TAU / frac);
-    }
-
-    for n in 0..<N do data[n] = get_sine(n, 4.8) + get_sine(n, 8) + 0.6;
-
-    modal_analysis(data[:], 24);
-    // defer delete(output);
-
-}
-
-debug :: false;
-
