@@ -26,18 +26,11 @@ main :: proc() {
     println();
     println();
 
-    noise: [cast(int) SAMPLE_RATE]f32;
+    noise: [cast(int) SAMPLE_RATE * 16]f32;
     for _, n in noise do noise[n] = rand.float32_range(-1, 1);
     println(noise[0:16]);
 
-    coeffs_a := biquad_calculate_coefficients(500, 70, 16);
-    coeffs_b := biquad_calculate_coefficients(10000, 30, 8);
-    
-    state: Biquad_State;
-    for value, n in noise do noise[n] = biquad_process(value, &state, coeffs_a);
-
-    state = Biquad_State{0, 0, 0, 0};
-    for value, n in noise do noise[n] = biquad_process(value, &state, coeffs_b);
+    apply_nonmodal_variation(noise[:], 5, Range{4, 12}, Range{2, 8});
 
     println(noise[0:16]);
     success := os.write_entire_file("Noise", transmute([]byte) noise[:]);
@@ -89,6 +82,25 @@ biquad_calculate_coefficients :: proc(frequency: f32, attenuation_db: f32, quali
     coeffs.a2 = 1  - α / A;
 
     return;
+}
+
+Range :: struct {
+    min, max: f32,
+}
+
+apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain: Range, q: Range) {
+    for _ in 0..<num_filters {
+        log_f := rand.float32_range(0, 1);
+
+        frequency := (log_f * log_f) * 20_000;
+        attenuation := rand.float32_range(gain.min, gain.max);
+        quality     := rand.float32_range(q.min, q.max);
+
+        coeffs := biquad_calculate_coefficients(frequency, attenuation, quality);
+
+        state: Biquad_State;
+        for value, n in buffer do buffer[n] = biquad_process(value, &state, coeffs);
+    }
 }
 
 
@@ -147,6 +159,7 @@ apply_hamming_window :: proc(data: []$T) {
 }
 
 
+
 Spectral_Peak :: struct {
     weight: f32,
     index: int,
@@ -154,7 +167,6 @@ Spectral_Peak :: struct {
 
 find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spectral_Peak) {
     using fmt;
-
 
     magnitudes := make([]f32, len(data));
     defer delete(magnitudes);
@@ -173,7 +185,6 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
         else      do greater_than_previous = magnitudes[n] > magnitudes[n-1];
 
         greater_than_next := magnitudes[n] > magnitudes[n+1];
-
 
         when debug do println(magnitudes[n], greater_than_previous, greater_than_next);
 
@@ -207,6 +218,7 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
 
     return;
 }
+
 
 
 Mode :: struct {
