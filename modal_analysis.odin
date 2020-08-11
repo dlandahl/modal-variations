@@ -16,37 +16,24 @@ divisor :: proc() {
 main :: proc() {
     using fmt;
 
-    N :: FFT_SIZE * 2;
-    data: [N]f32;
+    // noise: [cast(int) SAMPLE_RATE * 64]f32;
+    // for _, n in noise do noise[n] = rand.float32_range(-1, 1);
+    // 
+    // apply_nonmodal_variation(noise[:], 12, Range{2, 8}, Range{2,6});
+    // 
+    // buffer := wave_encode(noise[:]);
+    // defer delete(buffer);
+    // 
+    // os.write_entire_file("Test file.wav", transmute([]u8) buffer);
 
-    get_sine :: proc(n: int, frac: f32) -> f32 {
-        return math.sin(cast(f32) n * math.TAU / frac);
-    }
+    buffer, error := os.read_entire_file("generativei24.wav");
+    raw_data, header, success := wave_decode(buffer);
 
-    for n in 0..<N do data[n] = get_sine(n, 4.8) + get_sine(n, 8) + 0.6;
-
-    modal_analysis(data[:], 24);
-
-    divisor();
-
-    noise: [cast(int) SAMPLE_RATE * 16]f32;
-    for _, n in noise do noise[n] = rand.float32_range(-1, 1);
-    println(noise[0:16]);
-
-    apply_nonmodal_variation(noise[:], 5, Range{4, 12}, Range{2, 8});
-
-    divisor();
-
-    file_data, error := os.read_entire_file("i24.wav");
-    println("Success read file:", error);
-    buffer, header, success := wave_decode(file_data);
-
+    println(error, success);
     println(header);
-    wave_file := wave_encode(buffer[:]);
-    defer delete(wave_file);
 
-    success = os.write_entire_file("NEW.wav", wave_file);
-    println("Success write wave file:", success);
+    new_buffer := wave_encode(raw_data, 2);
+    os.write_entire_file("FILE", new_buffer);
 }
 
 DEBUG       :: false;
@@ -77,13 +64,14 @@ biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad
 }
 
 biquad_calculate_coefficients :: proc(frequency: f32, attenuation_db: f32, quality: f32) -> (coeffs: Biquad_Coefficients) {
-    ω := math.TAU * frequency / SAMPLE_RATE;
+    using math;
+    ω := τ * frequency / SAMPLE_RATE;
 
-    α := math.sin(ω) / (2 * quality);
-    A := math.pow(10, -attenuation_db / 40);
+    α := sin(ω) / (2 * quality);
+    A := pow(10, -attenuation_db / 40);
 
     coeffs.b0 = 1  + α * A;
-    coeffs.b1 = -2 * math.cos(ω);
+    coeffs.b1 = -2 * cos(ω);
     coeffs.b2 = 1  - α * A;
 
     coeffs.a0 = 1  + α / A;
@@ -101,7 +89,7 @@ apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain: Range, q
     for _ in 0..<num_filters {
         log_f := rand.float32_range(0, 1);
 
-        frequency := (log_f * log_f) * 20_000;
+        frequency := math.pow(1, log_f) * 20_000;
         attenuation := rand.float32_range(gain.min, gain.max);
         quality     := rand.float32_range(q.min, q.max);
 
@@ -129,7 +117,7 @@ Wave_Header :: struct #packed {
     subchunk_1_id   : [4]byte,
     subchunk_1_size : u32,
     audio_format    : Wave_Format,
-    num_channels    : u16,
+    channels        : u16,
     sample_rate     : u32,
     byte_rate       : u32,
     block_align     : u16,
@@ -138,7 +126,7 @@ Wave_Header :: struct #packed {
     subchunk_2_size : u32,
 }
 
-wave_generate_header :: proc(num_samples: int) -> Wave_Header {
+wave_generate_header :: proc(num_samples: int, num_channels: int = 1) -> Wave_Header {
     using header: Wave_Header;
     bytes_per_sample := size_of(f32);
 
@@ -148,11 +136,11 @@ wave_generate_header :: proc(num_samples: int) -> Wave_Header {
     subchunk_1_id   = {'f', 'm', 't', ' '};
     subchunk_1_size = 16;
     audio_format    = Wave_Format.FLOAT;
-    num_channels    = 1;
+    channels        = u16(num_channels);
     sample_rate     = u32(SAMPLE_RATE);
-    byte_rate       = u32(SAMPLE_RATE * bytes_per_sample);
-    block_align     = u16(bytes_per_sample);
-    bits_per_sample = 32;
+    byte_rate       = u32(SAMPLE_RATE * bytes_per_sample * num_channels);
+    block_align     = u16(bytes_per_sample * num_channels);
+    bits_per_sample = bytes_per_sample * 8;
     subchunk_2_id   = {'d', 'a', 't', 'a'};
     subchunk_2_size = u32(num_samples * bytes_per_sample);
 
@@ -166,10 +154,10 @@ wave_read_header :: proc(file: []byte) -> (header: Wave_Header) {
     return;
 }
 
-wave_encode :: proc(buffer: []f32) -> (file: []byte) {
+wave_encode :: proc(buffer: []f32, num_channels: int = 1) -> (file: []byte) {
     file = make([]byte, WAVE_HEADER_SIZE + len(buffer) * size_of(f32));
 
-    header := transmute([WAVE_HEADER_SIZE]byte) wave_generate_header(len(buffer));
+    header := transmute([WAVE_HEADER_SIZE]byte) wave_generate_header(len(buffer), num_channels);
     copy(file, header[:]);
     copy(file[WAVE_HEADER_SIZE:], transmute([]byte) buffer);
 
@@ -181,13 +169,13 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
     header = wave_read_header(file);
     success = true;
 
-    if header.chunk_id      != {'R', 'I', 'F', 'F'}
-    || header.format        != {'W', 'A', 'V', 'E'}
-    || header.subchunk_1_id != {'f', 'm', 't', ' '}
-    || header.subchunk_2_id != {'d', 'a', 't', 'a'} {
-        fmt.println("Invalid wave header");
-        success = false;
-        return;
+    if     header.chunk_id      != {'R', 'I', 'F', 'F'}
+        || header.format        != {'W', 'A', 'V', 'E'}
+        || header.subchunk_1_id != {'f', 'm', 't', ' '}
+        || header.subchunk_2_id != {'d', 'a', 't', 'a'} {
+            fmt.println("Invalid wave header");
+            success = false;
+            return;
     }
 
     data_chunk := file[44:];
@@ -199,8 +187,9 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
 
     case .INTEGER:
         max_value := 1 << (header.bits_per_sample - 1) - 1;
-        if      header.bits_per_sample == 16 {
-            for _, n in data do data[n] = cast(f32) (transmute([]i16) data_chunk)[n];
+
+        if header.bits_per_sample == 16 do for _, n in data {
+            data[n] = cast(f32) (transmute([]i16) data_chunk)[n];
         }
         else if header.bits_per_sample == 24 {
             fmt.println("24");
@@ -210,11 +199,15 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
                 array = array[3:];
             }
         }
+
         for _, n in data {
             data[n] /= f32(max_value);
             if data[n] >= 1 do data[n] -= 2;
-            fmt.println(data[n]);
         }
+    case:
+        fmt.println("Invalid wave header");
+        success = false;
+        return;
     }
     return;
 }
@@ -314,7 +307,6 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
                 greater_than_next     = magnitudes[n] > magnitudes[n+1];
                 when DEBUG do println(magnitudes[n], greater_than_previous, greater_than_next);
             }
-            // if n >= len(magnitudes) / 2 do break;
 
             last_minimum_value := magnitudes[last_minimum_index];
             if last_minimum_index == 0 do last_minimum_value = 0;
@@ -400,7 +392,6 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
 
     peaks_to_track := make([]Spectral_Peak, min(mode_count, len(all_peaks_in_all_frames[2])));
     copy(peaks_to_track, all_peaks_in_all_frames[2][:]);
-    // for n in 0..<len(peaks) do peaks[n] = all_peaks[n];
 
     residue = make([]f32,  len(data));
     modes   = make([]Mode, len(peaks_to_track));
@@ -411,17 +402,14 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
         new_mode: Mode;
         new_mode.frequency = f32(peak.index) * SAMPLE_RATE / FFT_SIZE;
         new_mode.phase = math.atan2(imag(bin), real(bin));
-        // new_mode.amplitude = peak.weight / cast(f32) FFT_SIZE;
 
         for frame, l in spectral_frames {
             bin = frame[peak.index];
             new_mode.envelope[l] = abs(bin) / FFT_SIZE;
-            // println(peak.weight / cast(f32) FFT_SIZE);
         }
 
         modes[n] = new_mode;
     }
-    //    return modes[:];
     println("\n\n\n");
     for mode in modes do println(mode, "\n");
     return;
