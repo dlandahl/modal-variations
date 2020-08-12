@@ -63,7 +63,7 @@ biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad
     return;
 }
 
-biquad_calculate_coefficients :: proc(frequency: f32, attenuation_db: f32, quality: f32) -> (coeffs: Biquad_Coefficients) {
+biquad_calculate_coefficients :: proc(frequency, attenuation_db, quality: f32) -> (coeffs: Biquad_Coefficients) {
     using math;
     ω := τ * frequency / SAMPLE_RATE;
 
@@ -85,7 +85,7 @@ Range :: struct {
     min, max: f32,
 }
 
-apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain: Range, q: Range) {
+apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain, q: Range) {
     for _ in 0..<num_filters {
         log_f := rand.float32_range(0, 1);
 
@@ -140,7 +140,7 @@ wave_generate_header :: proc(num_samples: int, num_channels: int = 1) -> Wave_He
     sample_rate     = u32(SAMPLE_RATE);
     byte_rate       = u32(SAMPLE_RATE * bytes_per_sample * num_channels);
     block_align     = u16(bytes_per_sample * num_channels);
-    bits_per_sample = bytes_per_sample * 8;
+    bits_per_sample = u16(bytes_per_sample * 8);
     subchunk_2_id   = {'d', 'a', 't', 'a'};
     subchunk_2_size = u32(num_samples * bytes_per_sample);
 
@@ -178,7 +178,7 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
             return;
     }
 
-    data_chunk := file[44:];
+    data_chunk := file[WAVE_HEADER_SIZE:];
     data = make([]f32, len(data_chunk) / int(header.bits_per_sample / 8));
 
     switch header.audio_format {
@@ -192,7 +192,6 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
             data[n] = cast(f32) (transmute([]i16) data_chunk)[n];
         }
         else if header.bits_per_sample == 24 {
-            fmt.println("24");
             array := data_chunk[:];
             for n := 0; len(array) >= 3; n += 1 {
                 data[n] = cast(f32) (u32(array[2]) << 16 | u32(array[1]) << 8 | u32(array[0]));
@@ -327,8 +326,6 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
     return;
 }
 
-
-
 Mode :: struct {
     envelope: [16]f32,
     frequency: f32,
@@ -383,7 +380,7 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
     }
 
     {
-        if DEBUG do println("\n\n\n");
+        when DEBUG do println("\n\n\n");
         for all_peaks_in_one_frame in all_peaks_in_all_frames {
             println("\n=====================");
             for peak in all_peaks_in_one_frame do if peak.weight > 0.01 do println(peak);
