@@ -9,9 +9,37 @@ import "core:sort"
 import "core:os"
 import "core:fmt"
 
+
+
 divisor :: inline proc() {
     fmt.println("\n\n==========================");
 }
+
+noise_generator :: proc($N: int) -> (buffer: [N]f32) {
+    for _, n in 0..<N do buffer[n] = rand.float32_range(-1, 1);
+    return;
+}
+
+sine_generator :: proc(N: int, frequencies: []f32) -> (buffer: []f32) {
+    buffer = make([]f32, N);
+    for _, n in 0..<N {
+        for f in frequencies {
+            buffer[n] += math.sin(f32(n) * math.TAU * f / SAMPLE_RATE);
+        }
+        buffer[n] /= cast(f32) len(frequencies);
+    }
+    return;
+}
+
+to_bytes :: inline proc(buffer: []$T) -> []byte {
+    return transmute([]byte) mem.Raw_Slice{raw_data(buffer), len(buffer) * size_of(T)};
+}
+
+from_bytes :: inline proc(buffer: []byte) -> []f32 {
+    return transmute([]f32) mem.Raw_Slice{raw_data(buffer), len(buffer) / 4};
+}
+
+
 
 main :: proc() {
     using fmt;
@@ -29,19 +57,18 @@ main :: proc() {
     // buffer, error := os.read_entire_file("generativei24.wav");
     // raw_data, header, success := wave_decode(buffer);
 
-    raw_data: [1 << 18]f32;
-    for value, n in raw_data {
-        raw_data[n] = math.sin(cast(f32) n * math.TAU * 440 / cast(f32) SAMPLE_RATE);
-    }
+    buffer := sine_generator(1 << 16, { 22, 110, 132 });
+    apply_hamming_window(buffer);
+    defer delete(buffer);
 
-    complex_data := alloc_for_r2c_fft(raw_data[:]);
+    complex_data := alloc_for_r2c_fft(buffer[:]);
     cooley_tukey(complex_data[:]);
     inverse_cooley_tukey(complex_data[:]);
 
-    for value, n in raw_data do raw_data[n] = real(complex_data[n]);
+    for value, n in buffer do buffer[n] = real(complex_data[n]);
 
-    new_buffer := wave_encode(raw_data[:], 1);
-    os.write_entire_file("FILE", transmute([]u8) raw_data[:]);
+    wave_file := wave_encode(buffer[:], 1);
+    os.write_entire_file("FILE", wave_file);
 
     // delete(residue);
     // delete(modes);
@@ -74,6 +101,7 @@ biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad
 
     y2 = y1;
     y1 = y0;
+
     return;
 }
 
@@ -156,7 +184,7 @@ wave_generate_header :: proc(num_samples: int, num_channels: int = 1) -> Wave_He
     block_align     = u16(bytes_per_sample * num_channels);
     bits_per_sample = u16(bytes_per_sample * 8);
     subchunk_2_id   = {'d', 'a', 't', 'a'};
-    subchunk_2_size = u32(num_samples * bytes_per_sample);
+    subchunk_2_size = u32(num_samples * bytes_per_sample * num_channels);
 
     return header;
 }
@@ -173,7 +201,7 @@ wave_encode :: proc(buffer: []f32, num_channels: int = 1) -> (file: []byte) {
 
     header := transmute([WAVE_HEADER_SIZE]byte) wave_generate_header(len(buffer), num_channels);
     copy(file, header[:]);
-    copy(file[WAVE_HEADER_SIZE:], transmute([]byte) buffer);
+    copy(file[WAVE_HEADER_SIZE:], to_bytes(buffer));
 
     return;
 }
@@ -230,7 +258,11 @@ wave_decode :: proc(file: []byte) -> (data: []f32, header: Wave_Header, success:
 cooley_tukey :: proc(data: []complex64) {
 
     N := len(data);
-    assert(math.is_power_of_two(N), "FFT size must be a power of two");
+    if !math.is_power_of_two(N) {
+        fmt.println("FFT size must be a power of two, got ", N);
+        assert(false);
+    }
+
     if N < 2 do return;
 
     M := N / 2;
@@ -257,10 +289,10 @@ cooley_tukey :: proc(data: []complex64) {
 }
 
 inverse_cooley_tukey :: proc(data: []complex64) {
-
-    N := cast(f32) len(data);
     for value, n in data do data[n] = complex(imag(value), real(value));
     cooley_tukey(data);
+
+    N := cast(f32) len(data);
     for value, n in data do data[n] = complex(imag(value) / N, real(value) / N);
 }
 
