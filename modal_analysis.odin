@@ -9,7 +9,7 @@ import "core:sort"
 import "core:os"
 import "core:fmt"
 
-divisor :: proc() {
+divisor :: inline proc() {
     fmt.println("\n\n==========================");
 }
 
@@ -26,14 +26,28 @@ main :: proc() {
     // 
     // os.write_entire_file("Test file.wav", transmute([]u8) buffer);
 
-    buffer, error := os.read_entire_file("generativei24.wav");
-    raw_data, header, success := wave_decode(buffer);
+    // buffer, error := os.read_entire_file("generativei24.wav");
+    // raw_data, header, success := wave_decode(buffer);
 
-    println(error, success);
-    println(header);
+    raw_data: [1 << 18]f32;
+    for value, n in raw_data {
+        raw_data[n] = math.sin(cast(f32) n * math.TAU * 440 / cast(f32) SAMPLE_RATE);
+    }
 
-    new_buffer := wave_encode(raw_data, 2);
-    os.write_entire_file("FILE", new_buffer);
+    complex_data := alloc_for_r2c_fft(raw_data[:]);
+    cooley_tukey(complex_data[:]);
+    inverse_cooley_tukey(complex_data[:]);
+
+    for value, n in raw_data do raw_data[n] = real(complex_data[n]);
+
+    new_buffer := wave_encode(raw_data[:], 1);
+    os.write_entire_file("FILE", transmute([]u8) raw_data[:]);
+
+    // delete(residue);
+    // delete(modes);
+    // delete(new_buffer);
+    // delete(raw_data);
+    // delete(buffer);
 }
 
 DEBUG       :: false;
@@ -245,8 +259,9 @@ cooley_tukey :: proc(data: []complex64) {
 inverse_cooley_tukey :: proc(data: []complex64) {
 
     N := cast(f32) len(data);
-    for value, n in data do data[n] = complex(imag(value) / N, real(value) / N);
+    for value, n in data do data[n] = complex(imag(value), real(value));
     cooley_tukey(data);
+    for value, n in data do data[n] = complex(imag(value) / N, real(value) / N);
 }
 
 alloc_for_r2c_fft :: proc(data: []f32) -> []complex64 {
@@ -327,13 +342,14 @@ find_and_alloc_spectral_peaks :: proc(data: []complex64) -> (peaks: [dynamic]Spe
 }
 
 Mode :: struct {
-    envelope: [16]f32,
+    envelope: [1024]f32,
     frequency: f32,
     phase: f32,
 }
 
 modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue: []f32) {
     using fmt;
+
 
     M :: FFT_SIZE;
     HOP_SIZE :: FFT_SIZE / 4;
@@ -353,7 +369,9 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
             copy(window[:], padded_data[index:index + M]);
             apply_hamming_window(window[:]);
 
-            copy(spectral_frames[l][:], alloc_for_r2c_fft(window[:]));
+            complex_buffer := alloc_for_r2c_fft(window[:]);
+            copy(spectral_frames[l][:], complex_buffer);
+            delete(complex_buffer);
             cooley_tukey(spectral_frames[l][:]);
         }
     }
@@ -407,7 +425,24 @@ modal_analysis :: proc(data: []f32, mode_count: int) -> (modes: []Mode, residue:
 
         modes[n] = new_mode;
     }
-    println("\n\n\n");
-    for mode in modes do println(mode, "\n");
+
+    residue = make([]f32, len(data) + M);
+
+    for frame, l in spectral_frames {
+        index := l * HOP_SIZE;
+        slice := residue[index:index + M];
+
+        the_frame := frame;
+        inverse_cooley_tukey(the_frame[:]);
+        for n in 0..<M {
+            slice[n] += real(frame[n]);
+        }
+    }
+
+    when DEBUG {
+        println("\n\n\n");
+        for mode in modes do println(mode, "\n");
+    }
+
     return;
 }
