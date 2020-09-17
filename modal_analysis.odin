@@ -15,18 +15,18 @@ divisor :: inline proc() {
     fmt.println("\n\n==========================");
 }
 
-noise_generator :: proc($N: int) -> (buffer: [N]f32) {
+generate_noise :: proc($N: int) -> (buffer: [N]f32) {
     for _, n in 0..<N do buffer[n] = rand.float32_range(-1, 1);
     return;
 }
 
-sine_generator :: proc(N: int, frequencies: []f32) -> (buffer: []f32) {
+generate_sine :: proc(N: int, components: []struct { frequency, amplitude: f32 }) -> (buffer: []f32) {
     buffer = make([]f32, N);
     for _, n in 0..<N {
-        for f in frequencies {
-            buffer[n] += math.sin(f32(n) * math.TAU * f / SAMPLE_RATE);
+        for component in components {
+            buffer[n] += math.sin(f32(n) * math.TAU * component.frequency / SAMPLE_RATE);
         }
-        buffer[n] /= cast(f32) len(frequencies);
+        buffer[n] /= cast(f32) len(components);
     }
     return;
 }
@@ -44,37 +44,22 @@ from_bytes :: inline proc(buffer: []byte) -> []f32 {
 main :: proc() {
     using fmt;
 
-    // noise: [cast(int) SAMPLE_RATE * 64]f32;
-    // for _, n in noise do noise[n] = rand.float32_range(-1, 1);
-    // 
-    // apply_nonmodal_variation(noise[:], 12, Range{2, 8}, Range{2,6});
-    // 
-    // buffer := wave_encode(noise[:]);
-    // defer delete(buffer);
-    // 
-    // os.write_entire_file("Test file.wav", transmute([]u8) buffer);
-
-    // buffer, error := os.read_entire_file("generativei24.wav");
-    // raw_data, header, success := wave_decode(buffer);
-
-    buffer := sine_generator(1 << 16, { 22, 110, 132 });
-    apply_hamming_window(buffer);
+    buffer := generate_sine(1 << 16, {{1000, 1}});
     defer delete(buffer);
 
     complex_data := alloc_for_r2c_fft(buffer[:]);
-    cooley_tukey(complex_data[:]);
-    inverse_cooley_tukey(complex_data[:]);
+    defer delete(complex_data);
 
-    for value, n in buffer do buffer[n] = real(complex_data[n]);
+    cooley_tukey(complex_data[:]);
+    // cooley_tukey(complex_data[:]);
+    // inverse_cooley_tukey(complex_data[:]);
+
+    for _, n in buffer do buffer[n] = real(complex_data[n]);
 
     wave_file := wave_encode(buffer[:], 1);
+    defer delete(wave_file);
     os.write_entire_file("FILE", wave_file);
 
-    // delete(residue);
-    // delete(modes);
-    // delete(new_buffer);
-    // delete(raw_data);
-    // delete(buffer);
 }
 
 DEBUG       :: false;
@@ -105,22 +90,22 @@ biquad_process :: proc(x0: f32, using state: ^Biquad_State, using coeffs: Biquad
     return;
 }
 
-biquad_calculate_coefficients :: proc(frequency, attenuation_db, quality: f32) -> (coeffs: Biquad_Coefficients) {
-    using math;
-    ω := τ * frequency / SAMPLE_RATE;
+biquad_calculate_coefficients :: proc(frequency, attenuation, q: f32) -> (Biquad_Coefficients) {
+    using coeffs: Biquad_Coefficients;
 
-    α := sin(ω) / (2 * quality);
-    A := pow(10, -attenuation_db / 40);
+    ω := math.τ * frequency / SAMPLE_RATE;
+    α := math.sin(ω) / (2 * q);
+    A := math.pow(10, -attenuation / 40);
 
-    coeffs.b0 = 1  + α * A;
-    coeffs.b1 = -2 * cos(ω);
-    coeffs.b2 = 1  - α * A;
+    b0 = 1  + α * A;
+    b1 = -2 * math.cos(ω);
+    b2 = 1  - α * A;
 
-    coeffs.a0 = 1  + α / A;
-    coeffs.a1 = coeffs.b1;
-    coeffs.a2 = 1  - α / A;
+    a0 = 1  + α / A;
+    a1 = b1;
+    a2 = 1  - α / A;
 
-    return;
+    return coeffs;
 }
 
 Range :: struct {
@@ -131,7 +116,7 @@ apply_nonmodal_variation :: proc(buffer: []f32, num_filters: int, gain, q: Range
     for _ in 0..<num_filters {
         log_f := rand.float32_range(0, 1);
 
-        frequency := math.pow(1, log_f) * 20_000;
+        frequency := math.sqrt(log_f) * 20_000;
         attenuation := rand.float32_range(gain.min, gain.max);
         quality     := rand.float32_range(q.min, q.max);
 
@@ -280,7 +265,7 @@ cooley_tukey :: proc(data: []complex64) {
         even := data[k];
         odd  := data[k + M];
 
-        theta := -math.TAU * f32(k) / f32(N);
+        theta := -math.τ * f32(k) / f32(N);
         w     := complex(math.cos(theta), math.sin(theta)) * odd;
 
         data[k]     = even + w;
